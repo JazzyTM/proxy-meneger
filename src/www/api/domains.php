@@ -45,6 +45,12 @@ class DomainAPI {
         $this->addColumnIfNotExists('enable_websocket', 'INTEGER DEFAULT 0');
         $this->addColumnIfNotExists('enable_gzip', 'INTEGER DEFAULT 1');
         $this->addColumnIfNotExists('port', 'INTEGER DEFAULT 80');
+        $this->addColumnIfNotExists('user_id', 'INTEGER DEFAULT 1');
+    }
+    
+    private function getCurrentUserId() {
+        session_start();
+        return $_SESSION['user_id'] ?? null;
     }
     
     private function addColumnIfNotExists($columnName, $columnDef) {
@@ -93,7 +99,14 @@ class DomainAPI {
     }
     
     private function listDomains() {
-        $stmt = $this->db->prepare("SELECT * FROM domain ORDER BY id DESC");
+        $userId = $this->getCurrentUserId();
+        if (!$userId) {
+            $this->sendResponse(['error' => 'Unauthorized'], 401);
+            return;
+        }
+        
+        $stmt = $this->db->prepare("SELECT * FROM domain WHERE user_id = :user_id ORDER BY id DESC");
+        $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
         $result = $stmt->execute();
         
         $data = [];
@@ -106,8 +119,15 @@ class DomainAPI {
     }
     
     private function getDomain($id) {
-        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id");
+        $userId = $this->getCurrentUserId();
+        if (!$userId) {
+            $this->sendResponse(['error' => 'Unauthorized'], 401);
+            return;
+        }
+        
+        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id AND user_id = :user_id");
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
         $result = $stmt->execute();
         
         $data = $result->fetchArray(SQLITE3_ASSOC);
@@ -120,6 +140,12 @@ class DomainAPI {
     }
     
     private function addDomains() {
+        $userId = $this->getCurrentUserId();
+        if (!$userId) {
+            $this->sendResponse(['error' => 'Unauthorized'], 401);
+            return;
+        }
+        
         $input = json_decode(file_get_contents('php://input'), true);
         $names = $input['names'] ?? [];
         $ip = $input['ip'] ?? '';
@@ -143,17 +169,20 @@ class DomainAPI {
                     name, status, date, ip, cert_status, 
                     tls_version, http_version, proxy_timeout, 
                     proxy_buffer_size, client_max_body_size, 
-                    enable_websocket, enable_gzip, port
+                    enable_websocket, enable_gzip, enable_cache,
+                    block_exploits, include_www, port, user_id
                 ) VALUES (
                     :name, 'new', :date, :ip, 'pending',
                     'TLSv1.2 TLSv1.3', 'http2', 60,
                     '4k', '10m',
-                    0, 1, 80
+                    0, 1, 0,
+                    1, 0, 80, :user_id
                 )");
                 
                 $stmt->bindValue(':name', $name, SQLITE3_TEXT);
                 $stmt->bindValue(':date', $date, SQLITE3_TEXT);
                 $stmt->bindValue(':ip', $ip, SQLITE3_TEXT);
+                $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
                 
                 if($stmt->execute()) {
                     if($this->db->changes() > 0) {
@@ -189,6 +218,12 @@ class DomainAPI {
     }
     
     private function updateDomain() {
+        $userId = $this->getCurrentUserId();
+        if (!$userId) {
+            $this->sendResponse(['error' => 'Unauthorized'], 401);
+            return;
+        }
+        
         $input = json_decode(file_get_contents('php://input'), true);
         $id = $input['id'] ?? null;
         
@@ -197,51 +232,76 @@ class DomainAPI {
             return;
         }
         
-        $updates = [];
-        $values = [];
-        
+        // Build update query with placeholders
         $allowedFields = [
             'ip', 'tls_version', 'http_version', 'proxy_timeout', 
             'proxy_buffer_size', 'client_max_body_size', 'custom_headers',
-            'custom_config', 'enable_websocket', 'enable_gzip', 'port'
+            'custom_config', 'enable_websocket', 'enable_gzip', 'enable_cache',
+            'block_exploits', 'include_www', 'port'
         ];
         
+        $setParts = [];
+        $values = [];
+        
         foreach($allowedFields as $field) {
-            if(isset($input[$field])) {
-                $updates[] = "$field = ?";
-                $values[] = $input[$field];
+            if(array_key_exists($field, $input)) {
+                $value = $input[$field];
+                // Convert boolean to integer for SQLite
+                if(is_bool($value)) {
+                    $value = $value ? 1 : 0;
+                }
+                $setParts[] = "$field = ?";
+                $values[] = $value;
             }
         }
         
-        if(empty($updates)) {
+        if(empty($setParts)) {
             $this->sendResponse(['error' => 'No fields to update'], 400);
             return;
         }
         
+        // Add id and user_id to values
         $values[] = $id;
-        $sql = "UPDATE domain SET " . implode(', ', $updates) . " WHERE id = ?";
+        $values[] = $userId;
+        
+        $sql = "UPDATE domain SET " . implode(', ', $setParts) . " WHERE id = ? AND user_id = ?";
         
         $stmt = $this->db->prepare($sql);
+        if (!$stmt) {
+            $this->sendResponse(['error' => 'Database error: ' . $this->db->lastErrorMsg()], 500);
+            return;
+        }
+        
         foreach($values as $i => $value) {
             $stmt->bindValue($i + 1, $value);
         }
         
-        if($stmt->execute()) {
-            $this->sendResponse(['success' => true, 'message' => 'Domain updated successfully']);
+        $result = $stmt->execute();
+        
+        if($result && $this->db->changes() > 0) {
+            $this->sendResponse(['success' => true, 'message' => 'Domain updated. Click "Generate Config" to apply changes.']);
         } else {
-            $this->sendResponse(['error' => 'Failed to update domain'], 400);
+            $this->sendResponse(['error' => 'Failed to update domain: ' . $this->db->lastErrorMsg()], 400);
         }
     }
+
     
     private function deleteDomain($id) {
+        $userId = $this->getCurrentUserId();
+        if (!$userId) {
+            $this->sendResponse(['error' => 'Unauthorized'], 401);
+            return;
+        }
+        
         if(!$id) {
             $this->sendResponse(['error' => 'Domain ID required'], 400);
             return;
         }
         
         // Get domain name before deleting
-        $stmt = $this->db->prepare("SELECT name FROM domain WHERE id = :id");
+        $stmt = $this->db->prepare("SELECT name FROM domain WHERE id = :id AND user_id = :user_id");
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
         $result = $stmt->execute();
         $domain = $result->fetchArray(SQLITE3_ASSOC);
         
@@ -253,12 +313,13 @@ class DomainAPI {
         $domainName = $domain['name'];
         
         // Delete from database
-        $stmt = $this->db->prepare("DELETE FROM domain WHERE id = :id");
+        $stmt = $this->db->prepare("DELETE FROM domain WHERE id = :id AND user_id = :user_id");
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+        $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
         
         if($stmt->execute() && $this->db->changes() > 0) {
             // Try to delete nginx config file
-            $configFile = "/etc/nginx/conf.d/$domainName.conf";
+            $configFile = "/nginx-configs/$domainName.conf";
             if(file_exists($configFile)) {
                 @unlink($configFile);
             }

@@ -33,6 +33,13 @@ class NginxAPI {
     }
     
     private function generateConfig() {
+        session_start();
+        $userId = $_SESSION['user_id'] ?? null;
+        if (!$userId) {
+            $this->sendResponse(['error' => 'Unauthorized'], 401);
+            return;
+        }
+        
         $input = json_decode(file_get_contents('php://input'), true);
         $domainId = $input['domain_id'] ?? null;
         $destinationIP = $input['destination_ip'] ?? null;
@@ -42,20 +49,22 @@ class NginxAPI {
             return;
         }
         
-        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id");
+        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id AND user_id = :user_id");
         $stmt->bindValue(':id', $domainId, SQLITE3_INTEGER);
+        $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
         $result = $stmt->execute();
         $domain = $result->fetchArray(SQLITE3_ASSOC);
         
         if(!$domain) {
-            $this->sendResponse(['error' => 'Domain not found'], 404);
+            $this->sendResponse(['error' => 'Domain not found or access denied'], 404);
             return;
         }
         
-        // Use destination IP from input or from domain settings
-        $destIP = $destinationIP ?? $domain['ip'];
+        // ALWAYS use IP from database - ignore input
+        $destIP = $domain['ip'];
+        
         if(!$destIP) {
-            $this->sendResponse(['error' => 'Destination IP not set'], 400);
+            $this->sendResponse(['error' => 'Destination IP not set in database. Please update domain settings first.'], 400);
             return;
         }
         
@@ -157,8 +166,9 @@ class NginxAPI {
         
         // Cache assets
         $enableCache = $domain['enable_cache'] ?? 0;
+        $port = $domain['port'] ?? 80;
         $cacheConfig = $enableCache ?
-            "location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {\n        expires 30d;\n        add_header Cache-Control \"public, immutable\";\n        proxy_pass http://DESTINATIONIP:DESTINATION_PORT;\n        proxy_set_header Host \$host;\n    }\n    " :
+            "location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {\n        expires 30d;\n        add_header Cache-Control \"public, immutable\";\n        proxy_pass http://{$destIP}:{$port};\n        proxy_set_header Host \$host;\n    }\n    " :
             "";
         $config = str_replace('CACHE_CONFIG', $cacheConfig, $config);
         if($enableCache) {
@@ -188,14 +198,6 @@ class NginxAPI {
         
         $logs[] = "[" . date('Y-m-d H:i:s') . "] Config file created: $configFile";
         $logs[] = "[" . date('Y-m-d H:i:s') . "] Destination: $destIP:" . ($domain['port'] ?? 80);
-        
-        // Update domain IP if provided
-        if($destinationIP) {
-            $stmt = $this->db->prepare("UPDATE domain SET ip = :ip WHERE id = :id");
-            $stmt->bindValue(':id', $domainId, SQLITE3_INTEGER);
-            $stmt->bindValue(':ip', $destinationIP, SQLITE3_TEXT);
-            $stmt->execute();
-        }
         
         $this->sendResponse([
             'success' => true,

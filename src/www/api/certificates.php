@@ -38,21 +38,40 @@ class CertificateAPI {
     }
     
     private function generateCertificate() {
-        $input = json_decode(file_get_contents('php://input'), true);
-        $domainId = $input['domain_id'] ?? null;
+        session_start();
+        $userId = $_SESSION['user_id'] ?? null;
         
-        if(!$domainId) {
-            $this->sendResponse(['error' => 'Domain ID required'], 400);
+        $logs = [];
+        $logs[] = "[" . date('Y-m-d H:i:s') . "] DEBUG: User ID: " . ($userId ?? 'null');
+        
+        if (!$userId) {
+            $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: User not logged in";
+            $this->sendResponse(['error' => 'Unauthorized', 'logs' => $logs], 401);
             return;
         }
         
-        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id");
+        $input = json_decode(file_get_contents('php://input'), true);
+        $domainId = $input['domain_id'] ?? null;
+        
+        $logs[] = "[" . date('Y-m-d H:i:s') . "] DEBUG: Domain ID: " . ($domainId ?? 'null');
+        
+        if(!$domainId) {
+            $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Domain ID not provided";
+            $this->sendResponse(['error' => 'Domain ID required', 'logs' => $logs], 400);
+            return;
+        }
+        
+        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id AND user_id = :user_id");
         $stmt->bindValue(':id', $domainId, SQLITE3_INTEGER);
+        $stmt->bindValue(':user_id', $userId, SQLITE3_INTEGER);
         $result = $stmt->execute();
         $domain = $result->fetchArray(SQLITE3_ASSOC);
         
+        $logs[] = "[" . date('Y-m-d H:i:s') . "] DEBUG: Domain found: " . ($domain ? 'yes' : 'no');
+        
         if(!$domain) {
-            $this->sendResponse(['error' => 'Domain not found'], 404);
+            $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Domain not found or access denied for user $userId";
+            $this->sendResponse(['error' => 'Domain not found or access denied', 'logs' => $logs], 404);
             return;
         }
         
@@ -60,7 +79,6 @@ class CertificateAPI {
         $serverIP = trim(shell_exec('curl -s https://ipinfo.io/ip'));
         $resolvedIP = gethostbyname($domainName);
         
-        $logs = [];
         $logs[] = "[" . date('Y-m-d H:i:s') . "] Starting certificate generation for: $domainName";
         $logs[] = "[" . date('Y-m-d H:i:s') . "] Server IP: $serverIP";
         $logs[] = "[" . date('Y-m-d H:i:s') . "] Resolved IP: $resolvedIP";
@@ -96,8 +114,9 @@ class CertificateAPI {
         
         $certExists = is_link($fullchainPath) && is_link($privkeyPath);
         
+        // Check if certificate exists (either newly created or already exists)
         if($certExists) {
-            $logs[] = "[" . date('Y-m-d H:i:s') . "] SUCCESS: Certificate files created";
+            $logs[] = "[" . date('Y-m-d H:i:s') . "] SUCCESS: Certificate is available";
             
             // Fix permissions for nginx to read certificates
             $logs[] = "[" . date('Y-m-d H:i:s') . "] Fixing certificate permissions...";
@@ -114,18 +133,30 @@ class CertificateAPI {
             
             $this->sendResponse([
                 'success' => true,
-                'message' => 'Certificate generated successfully. Nginx config updated to HTTPS.',
+                'message' => 'Certificate is active. Nginx config updated to HTTPS.',
                 'logs' => $logs
             ]);
         } else {
-            $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Certificate files not found";
+            // Certificate doesn't exist - check if certbot failed
+            $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Certificate files not found after certbot execution";
+            
+            // Check for common errors in output
+            $outputStr = implode("\n", $output);
+            if (strpos($outputStr, 'DNS problem') !== false) {
+                $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: DNS validation failed - domain may not be pointed correctly";
+            } elseif (strpos($outputStr, 'Connection refused') !== false) {
+                $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Connection refused - check if port 80 is accessible";
+            } elseif (strpos($outputStr, 'rate limit') !== false) {
+                $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Let's Encrypt rate limit reached";
+            }
+            
             $this->updateDomainStatus($domainId, 'error', 'cert_failed', implode("\n", $logs));
             
             $this->sendResponse([
                 'success' => false,
-                'error' => 'Certificate generation failed',
+                'error' => 'Certificate generation failed. Check logs for details.',
                 'logs' => $logs
-            ]);
+            ], 400);
         }
     }
     
@@ -193,36 +224,69 @@ class CertificateAPI {
     }
     
     private function regenerateNginxConfig($domainId, &$logs) {
-        // Trigger nginx config regeneration via internal call
-        $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id");
-        $stmt->bindValue(':id', $domainId, SQLITE3_INTEGER);
-        $result = $stmt->execute();
-        $domain = $result->fetchArray(SQLITE3_ASSOC);
-        
-        if (!$domain) {
-            $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Domain not found for config update";
-            return;
-        }
-        
-        // Call nginx API internally to regenerate config
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, "http://localhost/api/nginx.php?action=generate_config");
-        curl_setopt($ch, CURLOPT_POST, 1);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
-            'domain_id' => $domainId,
-            'destination_ip' => $domain['ip']
-        ]));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        
-        if ($httpCode == 200) {
-            $logs[] = "[" . date('Y-m-d H:i:s') . "] SUCCESS: Nginx config updated with HTTPS";
-        } else {
-            $logs[] = "[" . date('Y-m-d H:i:s') . "] WARNING: Failed to auto-update Nginx config";
+        try {
+            // Get domain info
+            $stmt = $this->db->prepare("SELECT * FROM domain WHERE id = :id");
+            $stmt->bindValue(':id', $domainId, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            $domain = $result->fetchArray(SQLITE3_ASSOC);
+            
+            if ($domain) {
+                // Generate config file directly here
+                $domainName = $domain['name'];
+                $destIP = $domain['ip'];
+                
+                // Check if SSL certificate exists
+                $fullchainPath = "/certs/certificates/live/$domainName/fullchain.pem";
+                $hasCertificate = is_link($fullchainPath);
+                
+                if ($hasCertificate) {
+                    $template = file_get_contents('/nginx-templates/vhost-template.txt');
+                    
+                    // Apply domain settings
+                    $config = str_replace('DOMAIN', $domainName, $template);
+                    $config = str_replace('DESTINATIONIP', $destIP, $config);
+                    $config = str_replace('DESTINATION_PORT', $domain['port'] ?? 80, $config);
+                    $config = str_replace('TLS_VERSION', $domain['tls_version'] ?? 'TLSv1.2 TLSv1.3', $config);
+                    
+                    $httpVersion = $domain['http_version'] ?? 'http2';
+                    $httpVersionDirective = $httpVersion === 'http2' ? 'http2 on;' : '';
+                    $config = str_replace('HTTP_VERSION_DIRECTIVE', $httpVersionDirective, $config);
+                    
+                    $config = str_replace('PROXY_TIMEOUTs', ($domain['proxy_timeout'] ?? 60) . 's', $config);
+                    $config = str_replace('PROXY_BUFFER_SIZE', $domain['proxy_buffer_size'] ?? '4k', $config);
+                    $config = str_replace('CLIENT_MAX_BODY_SIZE', $domain['client_max_body_size'] ?? '10m', $config);
+                    
+                    $enableGzip = $domain['enable_gzip'] ?? 1;
+                    $gzipConfig = $enableGzip ? 
+                        "gzip on;\n    gzip_vary on;\n    gzip_proxied any;\n    gzip_comp_level 6;\n    gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml font/truetype font/opentype application/vnd.ms-fontobject image/svg+xml;" :
+                        "gzip off;";
+                    $config = str_replace('GZIP_CONFIG', $gzipConfig, $config);
+                    
+                    $config = str_replace('WEBSOCKET_CONFIG', '', $config);
+                    $config = str_replace('CUSTOM_HEADERS', '', $config);
+                    $config = str_replace('CACHE_CONFIG', '', $config);
+                    
+                    $blockExploits = $domain['block_exploits'] ?? 1;
+                    $exploitsConfig = $blockExploits ?
+                        "# Block common exploits\n    if (\$request_uri ~* \"(\\.\\.|\\.git|wp-admin|wp-login|phpmyadmin|eval\\(|base64_decode)\") {\n        return 403;\n    }\n    " :
+                        "";
+                    $config = str_replace('BLOCK_EXPLOITS', $exploitsConfig, $config);
+                    $config = str_replace('CUSTOM_CONFIG', '', $config);
+                    
+                    // Save config
+                    $configFile = "/nginx-configs/$domainName.conf";
+                    file_put_contents($configFile, $config);
+                    
+                    $logs[] = "[" . date('Y-m-d H:i:s') . "] SUCCESS: Nginx config updated with HTTPS";
+                } else {
+                    $logs[] = "[" . date('Y-m-d H:i:s') . "] WARNING: Certificate files not found";
+                }
+            } else {
+                $logs[] = "[" . date('Y-m-d H:i:s') . "] ERROR: Domain not found for config update";
+            }
+        } catch (Exception $e) {
+            $logs[] = "[" . date('Y-m-d H:i:s') . "] WARNING: Failed to auto-update Nginx config: " . $e->getMessage();
         }
     }
     

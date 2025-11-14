@@ -216,6 +216,14 @@ start_services() {
     print_info "Waiting for services to start..."
     sleep 5
     
+    # Set correct permissions for PHP-FPM user
+    print_step "Setting permissions..."
+    docker compose exec -T webui chown -R nobody:nogroup /db /certs /nginx-configs
+    docker compose exec -T webui sh -c "chmod 666 /db/*.db /db/.jwt_secret 2>/dev/null || true"
+    chmod -R 755 certs/ nginx-configs/
+    
+    print_success "Permissions configured"
+    
     # Check if containers are running
     if docker compose ps | grep -q "Up"; then
         print_success "Services started successfully"

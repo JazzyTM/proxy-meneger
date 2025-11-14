@@ -8,6 +8,10 @@ class MyDB extends SQLite3
     function __construct()
     {
         $this->open('/db/db.db');
+        // Enable WAL mode for better concurrency
+        $this->exec('PRAGMA journal_mode=WAL;');
+        // Set busy timeout
+        $this->busyTimeout(5000);
     }
 }
 ?>

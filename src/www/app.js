@@ -143,7 +143,15 @@ createApp({
             try {
                 const response = await axios.get('api/domains.php');
                 if (response.data.success) {
-                    this.domains = response.data.data;
+                    // Convert integer boolean fields to actual booleans
+                    this.domains = response.data.data.map(domain => ({
+                        ...domain,
+                        enable_websocket: Boolean(domain.enable_websocket),
+                        enable_gzip: Boolean(domain.enable_gzip),
+                        enable_cache: Boolean(domain.enable_cache),
+                        block_exploits: Boolean(domain.block_exploits),
+                        include_www: Boolean(domain.include_www)
+                    }));
                 }
             } catch (error) {
                 this.showToast('Failed to load domains', 'error');
@@ -229,16 +237,20 @@ createApp({
 
                 if (response.data.success) {
                     this.showToast('Certificate generated successfully!', 'success');
-                    this.showLogs({
-                        name: 'Certificate Generation',
-                        error_log: response.data.logs.join('\n')
-                    });
+                    if (response.data.logs && response.data.logs.length > 0) {
+                        this.showLogs({
+                            name: 'Certificate Generation',
+                            error_log: response.data.logs.join('\n')
+                        });
+                    }
                 } else {
                     this.showToast(response.data.error || 'Certificate generation failed', 'error');
-                    this.showLogs({
-                        name: 'Certificate Generation Error',
-                        error_log: response.data.logs.join('\n')
-                    });
+                    if (response.data.logs && response.data.logs.length > 0) {
+                        this.showLogs({
+                            name: 'Certificate Generation Error',
+                            error_log: response.data.logs.join('\n')
+                        });
+                    }
                 }
                 await this.loadDomains();
             } catch (error) {
@@ -418,12 +430,26 @@ createApp({
                 
                 if (response.data.success) {
                     this.showToast('Domain updated successfully', 'success');
-                    this.showEditDomainModal = false;
-                    await this.loadDomains();
                     
                     // Auto-regenerate config after update
-                    this.showToast('Regenerating Nginx config...', 'info');
-                    await this.generateNginxConfig(this.editDomainForm.id);
+                    const domainId = this.editDomainForm.id;
+                    this.showEditDomainModal = false;
+                    
+                    try {
+                        this.showToast('Regenerating Nginx config...', 'info');
+                        const configResponse = await axios.post('api/nginx.php?action=generate_config', {
+                            domain_id: domainId
+                        });
+                        
+                        if (configResponse.data.success) {
+                            this.showToast('Config updated successfully', 'success');
+                        }
+                    } catch (configError) {
+                        console.error('Config generation error:', configError);
+                    }
+                    
+                    // Reload domains to get fresh data from database
+                    await this.loadDomains();
                 } else {
                     this.showToast(response.data.error || 'Failed to update domain', 'error');
                 }

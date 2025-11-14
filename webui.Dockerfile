@@ -25,7 +25,9 @@ COPY ./src/nginx-webui.conf /etc/nginx/sites-available/default
 RUN ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 
 # Configure PHP-FPM
-RUN sed -i 's/listen = .*/listen = 127.0.0.1:9000/' /usr/local/etc/php-fpm.d/www.conf
+RUN sed -i 's/listen = .*/listen = 127.0.0.1:9000/' /usr/local/etc/php-fpm.d/www.conf \
+    && sed -i 's/^user = .*/user = nobody/' /usr/local/etc/php-fpm.d/www.conf \
+    && sed -i 's/^group = .*/group = nogroup/' /usr/local/etc/php-fpm.d/www.conf
 
 # Copy templates
 COPY ./src/nginx-templates /nginx-templates
@@ -33,11 +35,13 @@ COPY ./src/nginx-templates /nginx-templates
 # Configure Supervisor
 COPY ./src/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create necessary directories
+# Create necessary directories and set permissions
 RUN mkdir -p /var/log/supervisor /run/php \
     && mkdir -p /var/www/html/.well-known/acme-challenge \
-    && chown -R www-data:www-data /var/www/html/.well-known \
-    && chmod -R 755 /var/www/html/.well-known
+    && chown -R nobody:nogroup /var/www/html/.well-known \
+    && chmod -R 755 /var/www/html/.well-known \
+    && groupadd -g 987 docker || true \
+    && usermod -aG docker nobody
 
 EXPOSE 80
 
