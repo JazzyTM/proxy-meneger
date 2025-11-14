@@ -172,6 +172,12 @@ class AuthAPI extends BaseAPI {
             $this->sendError('Email already exists');
         }
         
+        // Check if this is the first user - make them admin
+        $stmt = $this->db->query("SELECT COUNT(*) as count FROM users");
+        $countResult = $stmt->fetchArray(SQLITE3_ASSOC);
+        $isFirstUser = ($countResult['count'] == 0);
+        $role = $isFirstUser ? 'admin' : 'user';
+        
         // Create user with secure password hash
         $hashedPassword = Security::hashPassword($password);
         $stmt = $this->db->prepare("
@@ -181,7 +187,7 @@ class AuthAPI extends BaseAPI {
         $stmt->bindValue(1, $username, SQLITE3_TEXT);
         $stmt->bindValue(2, $email, SQLITE3_TEXT);
         $stmt->bindValue(3, $hashedPassword, SQLITE3_TEXT);
-        $stmt->bindValue(4, 'user', SQLITE3_TEXT);
+        $stmt->bindValue(4, $role, SQLITE3_TEXT);
         $stmt->bindValue(5, date('Y-m-d H:i:s'), SQLITE3_TEXT);
         $stmt->bindValue(6, 1, SQLITE3_INTEGER);
         
