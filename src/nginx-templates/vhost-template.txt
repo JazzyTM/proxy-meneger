@@ -53,6 +53,13 @@ server {
         proxy_buffering on;
         proxy_buffer_size PROXY_BUFFER_SIZE;
         proxy_buffers 8 PROXY_BUFFER_SIZE;
+        proxy_busy_buffers_size 16k;
+        
+        # Performance optimizations
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_next_upstream error timeout invalid_header http_500 http_502 http_503;
+        proxy_next_upstream_tries 2;
         
         # WebSocket support
         WEBSOCKET_CONFIG
