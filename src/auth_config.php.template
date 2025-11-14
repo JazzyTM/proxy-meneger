@@ -1,0 +1,3 @@
+<?php
+// Authentication configuration
+define('AUTH_PASSWORD', '_PASSWORD_');

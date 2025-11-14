@@ -1,0 +1,60 @@
+# Credentials and sensitive data
+credentials.txt
+credentials.txt.backup
+src/www/auth_config.php
+.jwt_secret
+
+# Database files
+db/*.db
+db/*.db-journal
+db/*.db-shm
+db/*.db-wal
+db/.jwt_secret
+
+# SSL Certificates
+certs/*
+!certs/.gitkeep
+
+# Nginx configs (generated)
+nginx-configs/*.conf
+!nginx-configs/.gitkeep
+
+# Logs
+*.log
+/var/log/
+
+# Security logs
+security.log
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+
+# Docker
+.env
+docker-compose.override.yml
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# Backup files
+backup/
+*.tar.gz
+*.zip
+
+# Node modules (if any)
+node_modules/
+
+# PHP
+vendor/
+composer.lock

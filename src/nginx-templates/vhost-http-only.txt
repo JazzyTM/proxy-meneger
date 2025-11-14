@@ -1,0 +1,56 @@
+server {
+    server_name DOMAIN;
+    listen 80;
+
+    # Client settings
+    client_max_body_size CLIENT_MAX_BODY_SIZE;
+
+    # Logging
+    access_log /var/log/nginx/DOMAIN-access.log;
+    error_log /var/log/nginx/DOMAIN-error.log;
+
+    # Gzip compression
+    GZIP_CONFIG
+
+    BLOCK_EXPLOITS
+
+    # Let's Encrypt challenge
+    location /.well-known/acme-challenge/ {
+        proxy_pass http://webui/.well-known/acme-challenge/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    CACHE_CONFIG
+
+    location / {
+        # Proxy headers
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Proxy timeouts
+        proxy_connect_timeout PROXY_TIMEOUTs;
+        proxy_send_timeout PROXY_TIMEOUTs;
+        proxy_read_timeout PROXY_TIMEOUTs;
+        
+        # Proxy buffering
+        proxy_buffering on;
+        proxy_buffer_size PROXY_BUFFER_SIZE;
+        proxy_buffers 8 PROXY_BUFFER_SIZE;
+        
+        # WebSocket support
+        WEBSOCKET_CONFIG
+        
+        # Custom headers
+        CUSTOM_HEADERS
+        
+        # Proxy pass
+        proxy_pass http://DESTINATIONIP:DESTINATION_PORT;
+        
+        # Custom configuration
+        CUSTOM_CONFIG
+    }
+}

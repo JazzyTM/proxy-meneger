@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  reverse-proxy:
+    build:
+      context: .
+      dockerfile: ./reverse-proxy.Dockerfile
+    container_name: reverse-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "./src/www:/var/www/html:ro"
+      - "./certs:/var/www/nginxConfig:ro"
+      - "./nginx-configs:/etc/nginx/conf.d:ro"
+    restart: unless-stopped
+    networks:
+      - proxy-network
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - CHOWN
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  webui:
+    build:
+      context: .
+      dockerfile: ./webui.Dockerfile
+    container_name: webui
+    ports:
+      - "8080:80"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./db:/db"
+      - "./certs:/certs"
+      - "./nginx-configs:/nginx-configs"
+      - "./src/www:/var/www/html"
+    restart: unless-stopped
+    networks:
+      - proxy-network
+    user: "root"
+    group_add:
+      - "${DOCKER_GID:-999}"
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - PHP_MEMORY_LIMIT=256M
+      - PHP_MAX_EXECUTION_TIME=60
+      - PHP_UPLOAD_MAX_FILESIZE=10M
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  proxy-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: proxy-br0
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
